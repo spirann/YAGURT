@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yagurt"
+version = "0.1.0"
+description = "Rebuild GoPro videos from a raw image of a formatted SD card"
+readme = "README.md"
+license = {text = "AGPL-3.0-or-later"}
+requires-python = ">=3.9"
+
+[project.scripts]
+yagurt = "yagurt.cli:main"
+
+[tool.setuptools]
+packages = ["yagurt"]
