@@ -23,16 +23,18 @@ class DecodeChecker:
         return bool(self.ffmpeg)
 
     def errors(self, annexb):
-        """How badly an Annex-B stream decodes: concealed macroblocks + errors.
+        """How badly an Annex-B stream decodes: the number of concealed macroblocks.
 
         Garbage in the middle of a CABAC slice often ends the slice early;
-        ffmpeg only reports that at info level ("concealing N DC ... errors"),
-        so the number of concealed macroblocks is the main signal.
+        ffmpeg only reports that at info level ("concealing N DC ... errors").
+        The later the decoder derails, the fewer macroblocks it conceals, so
+        this also ranks wrong placements. Other decoder errors only add 1, so
+        that they never outweigh that ranking but still keep the score above 0.
         """
         self.calls += 1
         p = subprocess.run(
-            [self.ffmpeg, "-hide_banner", "-nostdin", "-v", "info", "-f", "h264",
-             "-i", "pipe:0", "-f", "null", "-"],
+            [self.ffmpeg, "-hide_banner", "-nostdin", "-v", "info", "-threads", "1",
+             "-f", "h264", "-i", "pipe:0", "-f", "null", "-"],
             input=annexb, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         score = 0
         for line in p.stderr.splitlines():
@@ -40,7 +42,7 @@ class DecodeChecker:
             if m:
                 score += int(m.group(1))
             elif b"[h264" in line and b"error" in line.lower():
-                score += 100
+                score += 1
         return score
 
 

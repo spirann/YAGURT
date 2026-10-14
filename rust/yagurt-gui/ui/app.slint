@@ -1,0 +1,123 @@
+import { Button, CheckBox, LineEdit, ProgressIndicator, StandardTableView, TextEdit, VerticalBox, HorizontalBox, GroupBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "YAGURT: GoPro video recovery";
+    preferred-width: 900px;
+    preferred-height: 640px;
+
+    in-out property <string> image-path;
+    in-out property <string> output-dir;
+    in-out property <bool> use-ffmpeg: true;
+    in property <string> ffmpeg-status;
+    in property <bool> busy;
+    in property <bool> scanned;
+    in property <float> progress;
+    in property <string> status: "Choose the image of your card, then press Scan.";
+    in property <[[StandardListViewItem]]> videos;
+    in property <string> log;
+
+    callback choose-image();
+    callback choose-output();
+    callback scan();
+    callback recover();
+    callback open-output();
+
+    VerticalBox {
+        GroupBox {
+            title: "Card image";
+            HorizontalBox {
+                padding: 0;
+                LineEdit {
+                    text <=> root.image-path;
+                    placeholder-text: "Raw image of the SD card (ddrescue / dd output)";
+                    enabled: !root.busy;
+                }
+                Button {
+                    text: "Choose…";
+                    enabled: !root.busy;
+                    clicked => { root.choose-image(); }
+                }
+                Button {
+                    text: "Scan";
+                    primary: !root.scanned;
+                    enabled: !root.busy && root.image-path != "";
+                    clicked => { root.scan(); }
+                }
+            }
+        }
+
+        GroupBox {
+            title: "Videos found";
+            vertical-stretch: 1;
+            StandardTableView {
+                columns: [
+                    { title: "File" , min-width: 360px },
+                    { title: "Resolution" },
+                    { title: "Length" },
+                    { title: "Size" },
+                    { title: "Recovered" },
+                ];
+                rows: root.videos;
+            }
+        }
+
+        GroupBox {
+            title: "Recover";
+            VerticalBox {
+                padding: 0;
+                HorizontalBox {
+                    padding: 0;
+                    LineEdit {
+                        text <=> root.output-dir;
+                        placeholder-text: "Folder for the recovered videos";
+                        enabled: !root.busy;
+                    }
+                    Button {
+                        text: "Choose…";
+                        enabled: !root.busy;
+                        clicked => { root.choose-output(); }
+                    }
+                    Button {
+                        text: "Recover videos";
+                        primary: root.scanned;
+                        enabled: !root.busy && root.scanned && root.output-dir != "";
+                        clicked => { root.recover(); }
+                    }
+                    Button {
+                        text: "Open folder";
+                        enabled: root.output-dir != "";
+                        clicked => { root.open-output(); }
+                    }
+                }
+                HorizontalBox {
+                    padding: 0;
+                    CheckBox {
+                        text: "Check frames with ffmpeg (slower, much more accurate)";
+                        checked <=> root.use-ffmpeg;
+                        enabled: !root.busy;
+                    }
+                    Text {
+                        text: root.ffmpeg-status;
+                        vertical-alignment: center;
+                        color: #808080;
+                    }
+                }
+            }
+        }
+
+        ProgressIndicator {
+            progress: root.progress;
+            indeterminate: root.busy && root.progress <= 0;
+        }
+        Text {
+            text: root.status;
+            wrap: word-wrap;
+        }
+        TextEdit {
+            text: root.log;
+            read-only: true;
+            height: 120px;
+            font-size: 11px;
+        }
+    }
+}
