@@ -10,6 +10,7 @@ import sys
 from . import __version__
 from .decodecheck import DecodeChecker
 from .image import Image
+from .photos import recover_photos
 from .rebuild import find_candidates, recover_all
 
 
@@ -28,6 +29,8 @@ def main(argv=None):
     ap.add_argument("--data-offset", type=parse_int,
                     help="byte offset of the first cluster of the data area (default: auto)")
     ap.add_argument("--list", action="store_true", help="only list the videos found")
+    ap.add_argument("--no-photos", action="store_true", help="do not recover JPEG photos")
+    ap.add_argument("--no-videos", action="store_true", help="do not rebuild videos")
     ap.add_argument("--only", type=parse_int, action="append", metavar="OFFSET",
                     help="only rebuild the header at this byte offset (repeatable)")
     ap.add_argument("--rounds", type=int, default=2, help="refinement rounds (default 2)")
@@ -82,8 +85,10 @@ def run(a, img):
                 c.offset, c.name(), w, h, c.movie.duration_s, c.file_size / 1e6))
         else:
             print("  0x%010x  skipped: %s" % (c.offset, c.error))
-    if a.list or not good:
+    if a.list:
         return 0
+    if a.no_videos:
+        good = []
 
     os.makedirs(a.outdir, exist_ok=True)
     checker = None
@@ -93,14 +98,16 @@ def run(a, img):
             print("note: ffmpeg not found, so ambiguous cluster orders are guessed "
                   "(install ffmpeg or pass --ffmpeg for better results)")
             checker = None
-    print("\nrebuilding:")
-    recover_all(img, flags, good, rounds=a.rounds, checker=checker)
+    if good:
+        print("\nrebuilding:")
+        recover_all(img, flags, good, rounds=a.rounds, checker=checker)
 
     report = []
     ffmpeg = (a.ffmpeg or shutil.which("ffmpeg")) if a.verify else None
     if a.verify and not ffmpeg:
         print("warning: --verify needs ffmpeg in PATH; skipping verification")
-    print("\nresults:")
+    if good:
+        print("\nresults:")
     for c in good:
         out = os.path.join(a.outdir, c.name())
         c.write(out)
@@ -115,10 +122,30 @@ def run(a, img):
             line += "  ffmpeg errors: %d" % errs
         print(line)
         report.append(entry)
+    photo_report = []
+    if not a.no_photos:
+        print("\nphotos:")
+        photos = recover_photos(img, flags, good, checker)
+        pdir = os.path.join(a.outdir, "photos")
+        for ph in photos:
+            d = os.path.join(pdir, "thumbnails") if ph.is_thumbnail else pdir
+            os.makedirs(d, exist_ok=True)
+            out = os.path.join(d, ph.name())
+            with open(out, "wb") as f:
+                f.write(ph.data())
+            entry = ph.report()
+            if ffmpeg:
+                entry["ffmpeg_errors"] = decode_errors(ffmpeg, out)
+            photo_report.append(entry)
+        big = [ph for ph in photos if not ph.is_thumbnail]
+        print("  wrote %d photos (%d complete) to %s and %d thumbnails to %s" % (
+            len(big), sum(ph.complete for ph in big), pdir,
+            len(photos) - len(big), os.path.join(pdir, "thumbnails")))
     with open(os.path.join(a.outdir, "yagurt_report.json"), "w") as f:
         json.dump({"image": a.image, "cluster_size": img.cluster_size,
-                   "data_offset": img.data_offset, "files": report}, f, indent=1)
-    print("\nwrote %d files and yagurt_report.json to %s" % (len(good), a.outdir))
+                   "data_offset": img.data_offset, "files": report,
+                   "photos": photo_report}, f, indent=1)
+    print("\nwrote %d videos and yagurt_report.json to %s" % (len(good), a.outdir))
     return 0
 
 

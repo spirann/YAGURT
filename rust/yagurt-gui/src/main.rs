@@ -12,13 +12,13 @@ use std::sync::mpsc::{channel, Receiver};
 use slint::{ModelRc, SharedString, StandardListViewItem, VecModel};
 use yagurt_core::decode::ffmpeg::Ffmpeg;
 use yagurt_core::image::MappedFile;
-use yagurt_core::{Candidate, FrameChecker, Options, Recovery};
+use yagurt_core::{FrameChecker, JpegChecker, Options, Recovery};
 
 slint::include_modules!();
 
 enum Job {
     Scan(PathBuf),
-    Recover { outdir: PathBuf, use_ffmpeg: bool },
+    Recover { outdir: PathBuf, use_ffmpeg: bool, photos: bool },
 }
 
 /// Thread-safe handle for posting UI updates from the worker.
@@ -55,10 +55,17 @@ impl Ui {
 
 type Row = Vec<String>;
 
-fn rows(cands: &[Candidate], done: bool) -> Vec<Row> {
-    cands
-        .iter()
-        .filter(|c| c.ok())
+fn rows(rec: &Recovery, done: bool) -> Vec<Row> {
+    let photos = rec.photos.iter().filter(|p| !p.is_thumbnail()).map(|p| {
+        vec![
+            p.name(),
+            format!("{}x{}", p.width, p.height),
+            "photo".into(),
+            format!("{:.1} MB", p.size(&rec.img) as f64 / 1e6),
+            if p.complete { "complete".into() } else { "cut short".into() },
+        ]
+    });
+    rec.videos()
         .map(|c| {
             let (w, h) = c.resolution();
             vec![
@@ -69,6 +76,7 @@ fn rows(cands: &[Candidate], done: bool) -> Vec<Row> {
                 if done { format!("{:.1}%", c.stats.recovered_pct()) } else { String::new() },
             ]
         })
+        .chain(photos)
         .collect()
 }
 
@@ -125,10 +133,10 @@ fn worker(rx: Receiver<Job>, ui: Ui) {
         for c in rec.candidates.iter().filter(|c| !c.ok()) {
             ui.log(format!("  skipped header at 0x{:x}: {}", c.offset, c.error.as_deref().unwrap_or("")));
         }
-        set_rows(&ui, rows(&rec.candidates, false));
+        set_rows(&ui, rows(&rec, false));
         ui.with(move |w| w.set_scanned(found > 0));
         ui.status(if found > 0 {
-            format!("Found {found} videos. Choose an output folder and press Recover videos.")
+            format!("Found {found} videos. Choose an output folder and press Recover.")
         } else {
             "No video headers found in this image.".into()
         });
@@ -138,9 +146,9 @@ fn worker(rx: Receiver<Job>, ui: Ui) {
         // keep the scan while the user recovers (possibly several times)
         loop {
             match rx.recv() {
-                Ok(Job::Recover { outdir, use_ffmpeg }) => {
+                Ok(Job::Recover { outdir, use_ffmpeg, photos }) => {
                     ui.busy(true);
-                    recover(&mut rec, &outdir, use_ffmpeg, &path, &ui);
+                    recover(&mut rec, &outdir, use_ffmpeg, photos, &path, &ui);
                     ui.busy(false);
                 }
                 Ok(j @ Job::Scan(_)) => {
@@ -153,7 +161,7 @@ fn worker(rx: Receiver<Job>, ui: Ui) {
     }
 }
 
-fn recover(rec: &mut Recovery, outdir: &PathBuf, use_ffmpeg: bool, image: &std::path::Path, ui: &Ui) {
+fn recover(rec: &mut Recovery, outdir: &PathBuf, use_ffmpeg: bool, photos: bool, image: &std::path::Path, ui: &Ui) {
     if let Err(e) = std::fs::create_dir_all(outdir) {
         ui.status(format!("Cannot create {}: {e}", outdir.display()));
         return;
@@ -185,10 +193,31 @@ fn recover(rec: &mut Recovery, outdir: &PathBuf, use_ffmpeg: bool, image: &std::
             Err(e) => ui.log(format!("cannot write {}: {e}", path.display())),
         }
     }
+    let mut photo_note = String::new();
+    if photos {
+        ui.status("Recovering photos …".into());
+        let lu = ui.clone();
+        rec.recover_photos(ffmpeg.as_ref().map(|f| f as &dyn JpegChecker), &mut |line| lu.log(line.trim().to_string()));
+        let (mut big, mut thumbs) = (0, 0);
+        for p in &rec.photos {
+            let mut dir = outdir.join("photos");
+            if p.is_thumbnail() {
+                dir.push("thumbnails");
+                thumbs += 1;
+            } else {
+                big += 1;
+            }
+            let path = dir.join(p.name());
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, p.data(&rec.img))) {
+                ui.log(format!("cannot write {}: {e}", path.display()));
+            }
+        }
+        photo_note = format!(", {big} photos and {thumbs} thumbnails");
+    }
     let _ = std::fs::write(outdir.join("yagurt_report.json"), rec.report_json(&image.display().to_string()));
-    set_rows(ui, rows(&rec.candidates, true));
+    set_rows(ui, rows(rec, true));
     ui.progress(1.0);
-    ui.status(format!("Wrote {written} videos and yagurt_report.json to {}.", outdir.display()));
+    ui.status(format!("Wrote {written} videos{photo_note} and yagurt_report.json to {}.", outdir.display()));
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -239,6 +268,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = t.send(Job::Recover {
                 outdir: PathBuf::from(ui.get_output_dir().as_str()),
                 use_ffmpeg: ui.get_use_ffmpeg(),
+                photos: ui.get_use_photos(),
             });
         }
     });

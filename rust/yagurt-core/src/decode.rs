@@ -12,6 +12,11 @@ pub trait FrameChecker: Sync {
     fn damage(&self, annexb: &[u8]) -> u64;
 }
 
+/// Something that decodes one JPEG and says how many errors it hit (0 = clean).
+pub trait JpegChecker: Sync {
+    fn jpeg_damage(&self, jpeg: &[u8]) -> u64;
+}
+
 /// Convert one length-prefixed sample to Annex-B. Returns (bytes, broken).
 /// With `partial`, a NAL cut short by the end of `sample` is kept.
 pub fn to_annexb(sample: &[u8], nls: usize, partial: bool) -> (Vec<u8>, bool) {
@@ -62,7 +67,7 @@ pub fn score_ffmpeg_log(log: &str) -> u64 {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ffmpeg {
-    use super::{score_ffmpeg_log, FrameChecker};
+    use super::{score_ffmpeg_log, FrameChecker, JpegChecker};
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
@@ -101,15 +106,16 @@ pub mod ffmpeg {
         }
     }
 
-    impl FrameChecker for Ffmpeg {
-        fn damage(&self, annexb: &[u8]) -> u64 {
-            let child = Command::new(&self.path)
-                .args(["-hide_banner", "-nostdin", "-v", "info", "-threads", "1", "-f", "h264", "-i", "pipe:0", "-f", "null", "-"])
+    impl Ffmpeg {
+        /// Run ffmpeg with `input` on stdin; returns its stderr.
+        fn decode(&self, args: &[&str], input: &[u8]) -> Option<String> {
+            let mut child = Command::new(&self.path)
+                .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
-                .spawn();
-            let Ok(mut child) = child else { return u64::MAX / 4 };
+                .spawn()
+                .ok()?;
             let mut stdin = child.stdin.take().unwrap();
             let mut stderr = child.stderr.take().unwrap();
             let log = std::thread::scope(|s| {
@@ -118,12 +124,26 @@ pub mod ffmpeg {
                     let _ = stderr.read_to_end(&mut v);
                     v
                 });
-                let _ = stdin.write_all(annexb);
+                let _ = stdin.write_all(input);
                 drop(stdin);
                 reader.join().unwrap_or_default()
             });
             let _ = child.wait();
-            score_ffmpeg_log(&String::from_utf8_lossy(&log))
+            Some(String::from_utf8_lossy(&log).into_owned())
+        }
+    }
+
+    impl FrameChecker for Ffmpeg {
+        fn damage(&self, annexb: &[u8]) -> u64 {
+            let args = ["-hide_banner", "-nostdin", "-v", "info", "-threads", "1", "-f", "h264", "-i", "pipe:0", "-f", "null", "-"];
+            self.decode(&args, annexb).map_or(u64::MAX / 4, |log| score_ffmpeg_log(&log))
+        }
+    }
+
+    impl JpegChecker for Ffmpeg {
+        fn jpeg_damage(&self, jpeg: &[u8]) -> u64 {
+            let args = ["-hide_banner", "-nostdin", "-v", "error", "-threads", "1", "-f", "jpeg_pipe", "-i", "pipe:0", "-f", "null", "-"];
+            self.decode(&args, jpeg).map_or(u64::MAX / 4, |log| log.lines().filter(|l| !l.trim().is_empty()).count() as u64)
         }
     }
 }
