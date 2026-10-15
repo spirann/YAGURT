@@ -7,18 +7,20 @@ use std::process::ExitCode;
 
 use yagurt_core::decode::ffmpeg::Ffmpeg;
 use yagurt_core::image::MappedFile;
-use yagurt_core::{FrameChecker, Options, ReadAt, Recovery};
+use yagurt_core::{FrameChecker, JpegChecker, Options, ReadAt, Recovery};
 
 const USAGE: &str = "\
-Rebuild GoPro MP4/LRV videos from a raw image of a formatted SD card.
+Rebuild GoPro MP4/LRV videos and JPEG photos from a raw image of a formatted SD card.
 
 usage: yagurt IMAGE [OUTDIR] [options]
 
   IMAGE                   raw image of the card (ddrescue output, dd, ...)
-  OUTDIR                  directory for recovered videos
+  OUTDIR                  directory for recovered videos (photos go to OUTDIR/photos)
 
 options:
   --list                  only list the videos found
+  --no-photos             do not recover JPEG photos
+  --no-videos             do not rebuild videos
   --only OFFSET           only rebuild the header at this byte offset (repeatable)
   --cluster-size N        cluster size, e.g. 0x8000 (default: from the boot sector)
   --data-offset N         byte offset of the first cluster (default: auto)
@@ -33,6 +35,8 @@ struct Args {
     image: PathBuf,
     outdir: Option<PathBuf>,
     list: bool,
+    photos: bool,
+    videos: bool,
     verify: bool,
     no_decode_check: bool,
     ffmpeg: Option<PathBuf>,
@@ -54,6 +58,8 @@ fn parse_args() -> Result<Args, String> {
         image: PathBuf::new(),
         outdir: None,
         list: false,
+        photos: true,
+        videos: true,
         verify: false,
         no_decode_check: false,
         ffmpeg: None,
@@ -74,6 +80,8 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             "--list" => a.list = true,
+            "--no-photos" => a.photos = false,
+            "--no-videos" => a.videos = false,
             "--verify" => a.verify = true,
             "--no-decode-check" => a.no_decode_check = true,
             "--ffmpeg" => a.ffmpeg = Some(PathBuf::from(val("--ffmpeg")?)),
@@ -150,28 +158,30 @@ fn run(a: &Args) -> Result<(), String> {
             Some(e) => println!("  0x{:010x}  skipped: {e}", c.offset),
         }
     }
-    if a.list || good == 0 {
+    if a.list {
         return Ok(());
     }
+    if !a.videos {
+        rec.candidates.clear();
+    }
+    let good = rec.videos().count();
     let outdir = a.outdir.as_ref().unwrap();
     std::fs::create_dir_all(outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
 
     let ffmpeg = Ffmpeg::find(a.ffmpeg.clone());
-    let checker: Option<&dyn FrameChecker> = if a.no_decode_check {
-        None
-    } else if let Some(f) = &ffmpeg {
-        Some(f)
-    } else {
+    let checker = if a.no_decode_check { None } else { ffmpeg.as_ref() };
+    if ffmpeg.is_none() && !a.no_decode_check {
         println!(
             "note: ffmpeg not found, so ambiguous cluster orders are guessed \
              (install ffmpeg or pass --ffmpeg for better results)"
         );
-        None
-    };
-    println!("\nrebuilding:");
-    rec.rebuild(a.rounds, checker, &mut |line| println!("{line}"));
+    }
+    if good > 0 {
+        println!("\nrebuilding:");
+        rec.rebuild(a.rounds, checker.map(|f| f as &dyn FrameChecker), &mut |line| println!("{line}"));
 
-    println!("\nresults:");
+        println!("\nresults:");
+    }
     for c in rec.videos() {
         let path = outdir.join(c.name());
         let f = File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -194,9 +204,40 @@ fn run(a: &Args) -> Result<(), String> {
         }
         println!("{line}");
     }
+    if a.photos {
+        println!("\nphotos:");
+        rec.recover_photos(checker.map(|f| f as &dyn JpegChecker), &mut |line| println!("{line}"));
+        let (big, thumbs) = write_photos(&rec, outdir)?;
+        println!(
+            "  wrote {} photos ({} complete) to {} and {} thumbnails to {}",
+            big,
+            rec.photos.iter().filter(|p| p.complete && !p.is_thumbnail()).count(),
+            outdir.join("photos").display(),
+            thumbs,
+            outdir.join("photos").join("thumbnails").display()
+        );
+    }
     let report = outdir.join("yagurt_report.json");
     std::fs::write(&report, rec.report_json(&a.image.display().to_string()))
         .map_err(|e| format!("{}: {e}", report.display()))?;
-    println!("\nwrote {} files and yagurt_report.json to {}", good, Path::new(outdir).display());
+    println!("\nwrote {} videos and yagurt_report.json to {}", good, Path::new(outdir).display());
     Ok(())
+}
+
+/// Write every recovered photo; returns (photos, thumbnails) written.
+fn write_photos(rec: &Recovery, outdir: &Path) -> Result<(usize, usize), String> {
+    let (mut big, mut thumbs) = (0, 0);
+    for p in &rec.photos {
+        let mut dir = outdir.join("photos");
+        if p.is_thumbnail() {
+            dir.push("thumbnails");
+            thumbs += 1;
+        } else {
+            big += 1;
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let path = dir.join(p.name());
+        std::fs::write(&path, p.data(&rec.img)).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok((big, thumbs))
 }

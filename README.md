@@ -1,7 +1,7 @@
 # YAGURT
 
-Rebuild GoPro videos from a raw image of an SD card that was formatted in
-the camera. Written for a GoPro HERO3 card; it should work for any camera that
+Rebuild GoPro videos and photos from a raw image of an SD card that was
+formatted in the camera. Written for a GoPro HERO3 card; it should work for any camera that
 writes H.264 MP4 files with the index (`moov`) at the start of the file.
 
 The repository holds two versions of the same method:
@@ -42,7 +42,7 @@ cargo build --release --workspace
 ```
 
 Choose the card image, press **Scan**, choose an output folder and press
-**Recover videos**. You can also pass the paths to start scanning right away:
+**Recover**. You can also pass the paths to start scanning right away:
 `./target/release/yagurt-gui ~/backup/gopro_card.img ~/recovered`.
 
 ### Command line
@@ -55,12 +55,18 @@ Choose the card image, press **Scan**, choose an output folder and press
 Each video gets a file named after its recording date, resolution and where
 its header sits on the card, for example
 `GOPRO_20140812_153012_1920x1080_at_0x1a2b0000.MP4`. Low-resolution preview
-copies (LRV) end in `.LRV.mp4`. A `yagurt_report.json` next to them says, for
-every file, how many of its clusters were verified, inferred or missing.
+copies (LRV) end in `.LRV.mp4`. Photos go to `photos/`, named the same way
+from their EXIF date (`GOPRO_20141231_161356_4000x3000_at_0x2b5e0000.JPG`), and
+small JPEGs such as the `.THM` video thumbnails go to `photos/thumbnails/`.
+A `yagurt_report.json` next to them says, for every video, how many of its
+clusters were verified, inferred or missing, and for every photo whether it
+is complete.
 
 | Option | What it does |
 | --- | --- |
 | `--list` | Only list the videos found. |
+| `--no-photos` | Do not recover JPEG photos. |
+| `--no-videos` | Only recover photos. |
 | `--only 0x1a2b0000` | Only rebuild the video whose header is at this offset (repeatable). |
 | `--cluster-size 0x8000` | Force the cluster size if the boot sector is missing or wrong. SDXC cards formatted as exFAT usually use `0x20000`. |
 | `--data-offset N` | Force the byte offset of the first cluster. |
@@ -112,6 +118,16 @@ and the result does not decode.
    to decode the frame for candidate placements and keeps the one that decodes
    with no concealed macroblocks. Without ffmpeg it guesses the most likely
    layout, which is usually but not always right.
+
+Photos are simpler: each one is written in one go, so its clusters follow
+each other except where the camera skipped clusters used by other files.
+YAGURT follows each photo from its first cluster and checks every next
+cluster against the JPEG format (in compressed JPEG data a FF byte can only be
+followed by 00, a restart marker or the end of the image, which video and
+other data fail within a few hundred bytes). It steps over clusters that the
+videos and other photos use, and with ffmpeg it only accepts an end of image
+where the photo decodes without errors. Photos cut short are still written,
+with the part that was found.
 
 The Rust engine (`rust/yagurt-core`) reads the image only through a small
 `ReadAt` trait and decodes only through a `FrameChecker` trait, so it has no

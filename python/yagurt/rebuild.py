@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import mp4
 from .decodecheck import to_annexb
-from .image import FLAG_HEADER, FLAG_SIGNATURE, FLAG_ZERO
+from .image import FLAG_HEADER, FLAG_JPEG, FLAG_SIGNATURE, FLAG_ZERO
 
 ST_MISSING = 0
 ST_HEADER = 1
@@ -750,7 +750,7 @@ def recover_all(img, flags, cands, rounds=2, checker=None, log=print):
     N = img.n_clusters
     base = bytearray(N)
     for k in range(N):
-        if flags[k] & (FLAG_ZERO | FLAG_SIGNATURE):
+        if flags[k] & (FLAG_ZERO | FLAG_SIGNATURE | FLAG_JPEG) or k < img.first_cluster:
             base[k] = 1
     good = [c for c in cands if c.ok]
     for c in good:

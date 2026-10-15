@@ -8,6 +8,7 @@ export component AppWindow inherits Window {
     in-out property <string> image-path;
     in-out property <string> output-dir;
     in-out property <bool> use-ffmpeg: true;
+    in-out property <bool> use-photos: true;
     in property <string> ffmpeg-status;
     in property <bool> busy;
     in property <bool> scanned;
@@ -47,7 +48,7 @@ export component AppWindow inherits Window {
         }
 
         GroupBox {
-            title: "Videos found";
+            title: "Videos and photos";
             vertical-stretch: 1;
             StandardTableView {
                 columns: [
@@ -78,7 +79,7 @@ export component AppWindow inherits Window {
                         clicked => { root.choose-output(); }
                     }
                     Button {
-                        text: "Recover videos";
+                        text: "Recover";
                         primary: root.scanned;
                         enabled: !root.busy && root.scanned && root.output-dir != "";
                         clicked => { root.recover(); }
@@ -91,6 +92,11 @@ export component AppWindow inherits Window {
                 }
                 HorizontalBox {
                     padding: 0;
+                    CheckBox {
+                        text: "Recover photos";
+                        checked <=> root.use-photos;
+                        enabled: !root.busy;
+                    }
                     CheckBox {
                         text: "Check frames with ffmpeg (slower, much more accurate)";
                         checked <=> root.use-ffmpeg;

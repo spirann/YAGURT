@@ -64,11 +64,13 @@ impl ReadAt for MappedFile {
 pub const FLAG_ZERO: u8 = 1; // all 0x00 or all 0xFF: never part of a video
 pub const FLAG_SIGNATURE: u8 = 2; // starts another file (ftyp / JPEG)
 pub const FLAG_HEADER: u8 = 4; // belongs to a parsed MP4 header
+pub const FLAG_JPEG: u8 = 8; // looks like compressed JPEG data: never part of a video
 
 #[derive(Clone, Debug)]
 pub struct Geometry {
     pub cluster_size: u64,
-    /// byte offset of cluster 0 modulo the cluster size
+    /// byte offset of the file system's data area (cluster 0 sits at this
+    /// offset modulo the cluster size)
     pub data_offset: u64,
     pub source: String,
 }
@@ -77,12 +79,21 @@ pub struct Image<'a> {
     pub src: &'a dyn ReadAt,
     pub size: u64,
     pub cluster_size: u64,
+    /// byte offset of cluster 0 (smaller than the cluster size)
     pub data_offset: u64,
+    /// clusters before the data area (boot sector, FATs) hold no file data
+    pub first_cluster: usize,
 }
 
 impl<'a> Image<'a> {
     pub fn new(src: &'a dyn ReadAt, g: &Geometry) -> Self {
-        Image { src, size: src.size(), cluster_size: g.cluster_size, data_offset: g.data_offset % g.cluster_size }
+        Image {
+            src,
+            size: src.size(),
+            cluster_size: g.cluster_size,
+            data_offset: g.data_offset % g.cluster_size,
+            first_cluster: (g.data_offset / g.cluster_size) as usize,
+        }
     }
 
     pub fn n_clusters(&self) -> usize {
@@ -224,6 +235,8 @@ pub fn scan(img: &Image, progress: &mut dyn FnMut(f32)) -> (Vec<u8>, Vec<usize>)
                 flags[k + i] |= FLAG_SIGNATURE;
             } else if cl.iter().all(|&b| b == 0) || cl.iter().all(|&b| b == 0xFF) {
                 flags[k + i] |= FLAG_ZERO;
+            } else if crate::photos::looks_like_jpeg_data(cl) {
+                flags[k + i] |= FLAG_JPEG;
             }
         }
         k += cnt;

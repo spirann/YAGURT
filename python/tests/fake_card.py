@@ -38,6 +38,35 @@ def make_video(path, size, bitrate, seconds, seed):
         "-movflags", "+faststart", path], check=True)
 
 
+def exif_app1(date, make="GoPro"):
+    """A minimal EXIF APP1 segment with Make and DateTimeOriginal."""
+    mk = make.encode() + b"\x00"
+    dt = date.encode() + b"\x00"
+    ifd0 = 8
+    exif_ifd = ifd0 + 2 + 2 * 12 + 4
+    data = exif_ifd + 2 + 12 + 4
+    t = b"MM\x00\x2a" + struct.pack(">I", ifd0)
+    t += struct.pack(">H", 2)
+    t += struct.pack(">HHII", 0x010F, 2, len(mk), data)
+    t += struct.pack(">HHII", 0x8769, 4, 1, exif_ifd) + bytes(4)
+    t += struct.pack(">H", 1) + struct.pack(">HHII", 0x9003, 2, len(dt), data + len(mk)) + bytes(4)
+    t += mk + dt
+    body = b"Exif\x00\x00" + t
+    return b"\xff\xe1" + struct.pack(">H", len(body) + 2) + body
+
+
+def make_photo(path, size, seed, date):
+    """A real JPEG with EXIF, as a camera would write it."""
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=%s" % size,
+        "-vf", "noise=alls=40:allf=t:all_seed=%d" % seed, "-frames:v", "1",
+        "-q:v", "2", "-pix_fmt", "yuvj420p", path], check=True)
+    d = _read(path)
+    d = d[:2] + exif_app1(date) + d[2:]
+    _write(path, d)
+    return d
+
+
 def _boxes(d, s, e):
     while s + 8 <= e:
         size, typ = struct.unpack_from(">I4s", d, s)
@@ -69,7 +98,8 @@ def pad_header_to_cluster(data):
     return bytes(d[:mdat]) + free + bytes(d[mdat:])
 
 
-def build(workdir, n_clusters=1200, junk_ratio=0.15, wrap=True, seed=1, video_junk=False):
+def build(workdir, n_clusters=1200, junk_ratio=0.15, wrap=True, seed=1, video_junk=False,
+          photos=False):
     """Write card.img in workdir. Returns (image, mp4, lrv, truth) where truth
     maps each file's logical cluster to its cluster index counted from the
     start of the FAT data area.
@@ -77,6 +107,9 @@ def build(workdir, n_clusters=1200, junk_ratio=0.15, wrap=True, seed=1, video_ju
     junk_ratio: share of clusters held by older files while recording.
     video_junk: fill those clusters with another H.264 recording (whose header
     is gone) instead of random bytes; the hardest case to tell apart.
+    photos: also write real JPEGs: an older photo, a newer one allocated
+    around it and around old data, and one taken while the video recorded.
+    Their bytes are returned in truth["photos"].
     """
     rnd = random.Random(seed)
     os.makedirs(workdir, exist_ok=True)
@@ -123,13 +156,23 @@ def build(workdir, n_clusters=1200, junk_ratio=0.15, wrap=True, seed=1, video_ju
                 put(i, rnd.choice(junk_src) if junk_src else rnd.randbytes(CLUSTER))
             k += run
         k += 1
-    photo = b"\xff\xd8\xff\xe1\x00\x10Exif\x00\x00MM\x00\x2a" + rnd.randbytes(3 * CLUSTER)
-    for i in range(3):
-        occupied[700 + i] = True
-    put(700, photo)
-
     def chunks(data):
         return [data[i:i + CLUSTER] for i in range(0, len(data), CLUSTER)]
+
+    truth = {"mp4": {}, "lrv": {}, "photos": []}
+    if photos:
+        p0, p1, p2 = (make_photo(os.path.join(workdir, "p%d.jpg" % i), sz, seed + i, dt)
+                      for i, (sz, dt) in enumerate([
+                          ("1280x960", "2014:12:31 16:13:56"), ("1600x1200", "2014:12:31 16:20:01"),
+                          ("1280x960", "2014:12:31 16:25:30")]))
+        truth["photos"] = [p0, p1, p2]
+        p2_chunks = chunks(p2)
+    else:
+        p0 = b"\xff\xd8\xff\xe1\x00\x10Exif\x00\x00MM\x00\x2a" + rnd.randbytes(3 * CLUSTER)
+        p2_chunks = []
+    for i, c in enumerate(chunks(p0)):
+        occupied[700 + i] = True
+        put(700 + i, c)
 
     mc, lc = chunks(mp4), chunks(lrv)
     mh = (mp4.find(b"mdat") + 4 + CLUSTER - 1) // CLUSTER  # header clusters
@@ -145,9 +188,17 @@ def build(workdir, n_clusters=1200, junk_ratio=0.15, wrap=True, seed=1, video_ju
                 return k
         raise RuntimeError("card full")
 
-    truth = {"mp4": {}, "lrv": {}}
+    if photos:  # newer photo, allocated over old data and the older photo
+        cursor[0] = 690
+        for c in chunks(p1):
+            put(alloc(), c)
+        cursor[0] = n_clusters - 150 if wrap else 10
     mi, li = mh, lh
     while mi < len(mc) or li < len(lc):
+        if p2_chunks and mi > len(mc) // 3:  # photo taken while recording
+            for _ in range(rnd.randint(1, 3)):
+                if p2_chunks:
+                    put(alloc(), p2_chunks.pop(0))
         for _ in range(rnd.randint(2, 8)):
             if mi < len(mc):
                 k = alloc()

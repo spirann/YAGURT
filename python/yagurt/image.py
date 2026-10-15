@@ -2,6 +2,7 @@
 
 import mmap
 import os
+import re
 import struct
 import sys
 from collections import Counter
@@ -9,6 +10,20 @@ from collections import Counter
 FLAG_ZERO = 1  # cluster is all 0x00 or all 0xFF: never part of a video
 FLAG_SIGNATURE = 2  # cluster starts another file (ftyp / JPEG): never mid-video
 FLAG_HEADER = 4  # cluster belongs to a parsed MP4 header
+FLAG_JPEG = 8  # cluster looks like compressed JPEG data: never part of a video
+
+# In compressed JPEG data FF is only followed by 00, a restart marker, FF or
+# the end of image; any other pair shows a cluster is not JPEG data.
+_NOT_JPEG = re.compile(rb"\xff[^\x00\xd0-\xd9\xff]")
+_ZERO_RUN = bytes(64)
+
+
+def looks_like_jpeg_data(buf, start=0, end=None):
+    end = len(buf) if end is None else end
+    if _NOT_JPEG.search(buf, start, end) is not None:
+        return False
+    chunk = buf[start:end]
+    return _ZERO_RUN not in chunk and b"\xff" in chunk
 
 
 class Image:
@@ -19,6 +34,7 @@ class Image:
         self.mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
         self.cluster_size = 0
         self.data_offset = 0
+        self.first_cluster = 0
         self.geometry_source = ""
 
     def close(self):
@@ -30,6 +46,8 @@ class Image:
     def set_geometry(self, cluster_size, data_offset, source):
         self.cluster_size = cluster_size
         self.data_offset = data_offset % cluster_size
+        # clusters before the file system's data area (boot sector, FATs) hold no file data
+        self.first_cluster = data_offset // cluster_size
         self.geometry_source = source
 
     @property
@@ -139,6 +157,8 @@ class Image:
                 buf = mm[p:p + c]
                 if buf == zero or buf == ones:
                     flags[k] |= FLAG_ZERO
+            elif looks_like_jpeg_data(mm, p, p + c):
+                flags[k] |= FLAG_JPEG
             if progress and k % step == 0:
                 sys.stderr.write("\rscanning image: %3d%%" % (100 * k // n))
                 sys.stderr.flush()

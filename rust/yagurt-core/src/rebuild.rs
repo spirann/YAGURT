@@ -19,7 +19,7 @@
 //! decodes with no concealed macroblocks.
 
 use crate::decode::{to_annexb, FrameChecker, START};
-use crate::image::{Image, FLAG_HEADER, FLAG_SIGNATURE, FLAG_ZERO};
+use crate::image::{Image, FLAG_HEADER, FLAG_JPEG, FLAG_SIGNATURE, FLAG_ZERO};
 use crate::mp4::{self, Movie};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1047,7 +1047,7 @@ impl Candidate {
 }
 
 /// Map `f` over `items` on all CPU cores, keeping the order.
-fn par_map<T: Send, R: Send>(items: Vec<T>, f: impl Fn(T) -> R + Sync) -> Vec<R> {
+pub(crate) fn par_map<T: Send, R: Send>(items: Vec<T>, f: impl Fn(T) -> R + Sync) -> Vec<R> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).max(1);
     let mut out = Vec::with_capacity(items.len());
     let mut items = items.into_iter().peekable();
@@ -1077,7 +1077,11 @@ pub fn recover_all(
     log: &mut dyn FnMut(&str),
 ) {
     let n_cl = img.n_clusters();
-    let mut base: Vec<u8> = flags.iter().map(|&f| (f & (FLAG_ZERO | FLAG_SIGNATURE) != 0) as u8).collect();
+    let mut base: Vec<u8> = flags
+        .iter()
+        .enumerate()
+        .map(|(k, &f)| (f & (FLAG_ZERO | FLAG_SIGNATURE | FLAG_JPEG) != 0 || k < img.first_cluster) as u8)
+        .collect();
     let good: Vec<usize> = (0..cands.len()).filter(|&i| cands[i].ok()).collect();
     for &i in &good {
         let c = &cands[i];

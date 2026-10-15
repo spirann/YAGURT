@@ -45,6 +45,15 @@ class DecodeChecker:
                 score += 1
         return score
 
+    def jpeg_errors(self, jpeg):
+        """Number of errors ffmpeg reports while decoding one JPEG (0 = clean)."""
+        self.calls += 1
+        p = subprocess.run(
+            [self.ffmpeg, "-hide_banner", "-nostdin", "-v", "error", "-threads", "1",
+             "-f", "jpeg_pipe", "-i", "pipe:0", "-f", "null", "-"],
+            input=bytes(jpeg), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        return len([ln for ln in p.stderr.splitlines() if ln.strip()])
+
 
 def to_annexb(sample, nls, partial=False):
     """Convert one length-prefixed sample to Annex-B. Returns (bytes, broken).

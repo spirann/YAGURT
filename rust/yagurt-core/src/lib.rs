@@ -19,10 +19,12 @@
 pub mod decode;
 pub mod image;
 pub mod mp4;
+pub mod photos;
 pub mod rebuild;
 
-pub use decode::FrameChecker;
+pub use decode::{FrameChecker, JpegChecker};
 pub use image::{Geometry, Image, ReadAt};
+pub use photos::Photo;
 pub use rebuild::{Candidate, Stats};
 
 #[derive(Clone, Debug, Default)]
@@ -38,6 +40,7 @@ pub struct Recovery<'a> {
     pub geometry: Geometry,
     pub flags: Vec<u8>,
     pub candidates: Vec<Candidate>,
+    pub photos: Vec<Photo>,
 }
 
 /// Work out cluster size and alignment: options, then boot sector, then a guess.
@@ -67,8 +70,7 @@ pub fn resolve_geometry(src: &dyn ReadAt, opts: &Options) -> Geometry {
 impl<'a> Recovery<'a> {
     /// Detect geometry, scan the whole image once and parse every MP4 header.
     pub fn open(src: &'a dyn ReadAt, opts: &Options, progress: &mut dyn FnMut(f32)) -> Recovery<'a> {
-        let mut geometry = resolve_geometry(src, opts);
-        geometry.data_offset %= geometry.cluster_size;
+        let geometry = resolve_geometry(src, opts);
         let img = Image::new(src, &geometry);
         let (flags, starts) = image::scan(&img, progress);
         let candidates = starts
@@ -76,12 +78,18 @@ impl<'a> Recovery<'a> {
             .map(|k| Candidate::new(&img, k))
             .filter(|c| opts.only.is_empty() || opts.only.contains(&c.offset))
             .collect();
-        Recovery { img, geometry, flags, candidates }
+        Recovery { img, geometry, flags, candidates, photos: Vec::new() }
     }
 
     /// Rebuild every parsable video (see [`rebuild::recover_all`]).
     pub fn rebuild(&mut self, rounds: usize, checker: Option<&dyn FrameChecker>, log: &mut dyn FnMut(&str)) {
         rebuild::recover_all(&self.img, &mut self.flags, &mut self.candidates, rounds.max(1), checker, log);
+    }
+
+    /// Find and rebuild the JPEG photos, around the clusters the videos use
+    /// (so call it after [`Recovery::rebuild`]).
+    pub fn recover_photos(&mut self, checker: Option<&dyn JpegChecker>, log: &mut dyn FnMut(&str)) {
+        self.photos = photos::recover_photos(&self.img, &self.flags, &self.candidates, checker, log);
     }
 
     pub fn videos(&self) -> impl Iterator<Item = &Candidate> {
@@ -121,6 +129,23 @@ impl<'a> Recovery<'a> {
                 st.ambiguous_runs,
                 st.recovered_pct(),
                 st.note.as_deref().map_or("null".into(), json_str),
+                map.join(",")
+            ));
+        }
+        s.push_str("\n ],\n \"photos\": [");
+        for (i, p) in self.photos.iter().enumerate() {
+            let map: Vec<String> = p.cluster_map().iter().map(|(l, q, n)| format!("[{l},{q},{n}]")).collect();
+            s.push_str(&format!(
+                "{}\n  {{\"file\": {}, \"offset\": {}, \"clusters\": {}, \"size\": {}, \"complete\": {}, \
+                 \"skips\": {}, \"decode_errors\": {}, \"cluster_map\": [{}]}}",
+                if i > 0 { "," } else { "" },
+                json_str(&p.name()),
+                p.offset,
+                p.clusters.len(),
+                p.size(&self.img),
+                p.complete,
+                p.skips,
+                p.damage.map_or("null".into(), |d| d.to_string()),
                 map.join(",")
             ));
         }
