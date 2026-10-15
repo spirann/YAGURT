@@ -281,6 +281,22 @@ pub fn jpeg_info(data: &[u8]) -> (u32, u32, Option<String>, Option<String>) {
         }
         p += 2 + ln;
     }
+    if w == 0 {
+        // headers we could not walk: look for a plausible SOF0
+        for i in 0..data.len().saturating_sub(12) {
+            let s = &data[i + 2..i + 12];
+            if data[i] == 0xFF
+                && data[i + 1] == 0xC0
+                && s[2] == 8
+                && matches!(s[7], 1 | 3)
+                && u16::from_be_bytes([s[0], s[1]]) as usize == 8 + 3 * s[7] as usize
+            {
+                h = u16::from_be_bytes([s[3], s[4]]) as u32;
+                w = u16::from_be_bytes([s[5], s[6]]) as u32;
+                break;
+            }
+        }
+    }
     (w, h, date, make)
 }
 
@@ -512,12 +528,15 @@ impl Photo {
     }
 
     fn describe(&mut self, img: &Image) {
-        let head: Vec<u8> = self.clusters.iter().take(4).flat_map(|&q| Self::cluster(img, q)).collect();
-        (self.width, self.height, self.date, self.make) = jpeg_info(&head);
+        // camera headers can hold large previews, so parse the whole file
+        (self.width, self.height, self.date, self.make) = jpeg_info(&self.data(img));
     }
 
     pub fn is_thumbnail(&self) -> bool {
-        self.width * self.height <= 320 * 240
+        if self.width > 0 && self.height > 0 {
+            return self.width * self.height <= 320 * 240;
+        }
+        self.clusters.len() <= 1
     }
 
     pub fn name(&self) -> String {
@@ -649,6 +668,21 @@ mod tests {
         assert!(!looks_like_jpeg_data(&[1, 2, 0xFF, 0x47, 3]));
         assert!(looks_like_jpeg_data(&[1, 2, 0xFF, 0x00, 3, 0xFF, 0xD1]));
         assert!(!looks_like_jpeg_data(&[0u8; 100]));
+    }
+
+    #[test]
+    fn size_past_large_app_segments() {
+        // a camera preview in APP2 segments pushes SOF0 past 128 KiB
+        let mut d = vec![0xFF, 0xD8];
+        for _ in 0..3 {
+            d.extend_from_slice(&[0xFF, 0xE2, 0xEA, 0x62]);
+            d.extend(std::iter::repeat(7u8).take(60000));
+        }
+        d.extend_from_slice(&[0xFF, 0xC0, 0, 17, 8, 0x0B, 0xB8, 0x0F, 0xA0, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        assert_eq!((jpeg_info(&d).0, jpeg_info(&d).1), (4000, 3000));
+        // and when the segment walk breaks, the SOF0 is still found
+        d[4] = 0x10;
+        assert_eq!((jpeg_info(&d).0, jpeg_info(&d).1), (4000, 3000));
     }
 
     #[test]
