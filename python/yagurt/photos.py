@@ -162,6 +162,14 @@ def jpeg_info(data):
         if mk == 0xDA:
             break
         p += 2 + ln
+    if not w:  # headers we could not walk: look for a plausible SOF0/SOF2
+        i = data.find(b"\xff\xc0")
+        while i >= 0 and not w:
+            seg = data[i + 2:i + 12]
+            if len(seg) == 10 and seg[2] == 8 and seg[7] in (1, 3) and \
+                    struct.unpack_from(">H", seg)[0] == 8 + 3 * seg[7]:
+                h, w = struct.unpack_from(">HH", seg, 3)
+            i = data.find(b"\xff\xc0", i + 2)
     return w, h, date, make
 
 
@@ -312,12 +320,14 @@ class Photo:
         return bytes(out)
 
     def describe(self):
-        head = b"".join(self.img.cluster(q) for q in self.clusters[:4])
-        self.width, self.height, self.date, self.make = jpeg_info(head)
+        # camera headers can hold large previews, so parse the whole file
+        self.width, self.height, self.date, self.make = jpeg_info(self.data())
 
     @property
     def is_thumbnail(self):
-        return self.width * self.height <= 320 * 240
+        if self.width and self.height:
+            return self.width * self.height <= 320 * 240
+        return len(self.clusters) <= 1
 
     def name(self):
         prefix = "GOPRO" if (self.make or "").lower().startswith("gopro") else "JPEG"

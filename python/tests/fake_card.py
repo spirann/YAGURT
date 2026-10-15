@@ -55,14 +55,20 @@ def exif_app1(date, make="GoPro"):
     return b"\xff\xe1" + struct.pack(">H", len(body) + 2) + body
 
 
-def make_photo(path, size, seed, date):
-    """A real JPEG with EXIF, as a camera would write it."""
+def make_photo(path, size, seed, date, preview=False):
+    """A real JPEG with EXIF, as a camera would write it. With ``preview``,
+    large APP2 segments (like a camera's embedded preview) push the frame
+    header past the first 128 KiB."""
     subprocess.run([
         "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=%s" % size,
         "-vf", "noise=alls=40:allf=t:all_seed=%d" % seed, "-frames:v", "1",
         "-q:v", "2", "-pix_fmt", "yuvj420p", path], check=True)
     d = _read(path)
     d = d[:2] + exif_app1(date) + d[2:]
+    if preview:
+        rnd = random.Random(seed)
+        app2 = b"\xff\xe2" + struct.pack(">H", 60002) + bytes(rnd.randrange(255) for _ in range(60000))
+        d = d[:2] + app2 * 3 + d[2:]
     _write(path, d)
     return d
 
@@ -161,7 +167,7 @@ def build(workdir, n_clusters=1200, junk_ratio=0.15, wrap=True, seed=1, video_ju
 
     truth = {"mp4": {}, "lrv": {}, "photos": []}
     if photos:
-        p0, p1, p2 = (make_photo(os.path.join(workdir, "p%d.jpg" % i), sz, seed + i, dt)
+        p0, p1, p2 = (make_photo(os.path.join(workdir, "p%d.jpg" % i), sz, seed + i, dt, preview=i == 1)
                       for i, (sz, dt) in enumerate([
                           ("1280x960", "2014:12:31 16:13:56"), ("1600x1200", "2014:12:31 16:20:01"),
                           ("1280x960", "2014:12:31 16:25:30")]))
