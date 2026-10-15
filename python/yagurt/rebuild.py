@@ -100,15 +100,8 @@ class Candidate:
         self.nls = v.nal_length_size if v else 4
         self.hlen = self.nls + 1
         self.vid = []
-        self.vid_sync = []
         if v:
-            for i, (o, s) in enumerate(zip(v.sample_offsets(), v.sizes)):
-                if s:
-                    self.vid.append((o, o + s))
-                    self.vid_sync.append(v.sync is None or i in v.sync)
-            order = sorted(range(len(self.vid)), key=lambda i: self.vid[i][0])
-            self.vid = [self.vid[i] for i in order]
-            self.vid_sync = [self.vid_sync[i] for i in order]
+            self.vid = sorted((o, o + s) for o, s in zip(v.sample_offsets(), v.sizes) if s)
         self.vid_starts = [o for o, _e in self.vid]
         self.mapping = []
         self.status = bytearray()

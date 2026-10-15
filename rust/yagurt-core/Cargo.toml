@@ -1,0 +1,13 @@
+[package]
+name = "yagurt-core"
+description = "Rebuild GoPro videos from a raw image of a formatted SD card (engine)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# memory-mapped image files (not for WebAssembly)
+mmap = ["dep:memmap2"]
+
+[dependencies]
+memmap2 = { version = "0.9", optional = true }

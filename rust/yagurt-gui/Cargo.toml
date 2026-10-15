@@ -1,0 +1,18 @@
+[package]
+name = "yagurt-gui"
+description = "Desktop app to rebuild GoPro videos from a formatted SD card image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "yagurt-gui"
+path = "src/main.rs"
+
+[dependencies]
+yagurt-core = { path = "../yagurt-core", features = ["mmap"] }
+slint = "1.18"
+rfd = "0.17"
+
+[build-dependencies]
+slint-build = "1.18"

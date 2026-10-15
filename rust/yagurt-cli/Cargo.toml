@@ -1,0 +1,13 @@
+[package]
+name = "yagurt-cli"
+description = "Command line tool to rebuild GoPro videos from a formatted SD card image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "yagurt"
+path = "src/main.rs"
+
+[dependencies]
+yagurt-core = { path = "../yagurt-core", features = ["mmap"] }
